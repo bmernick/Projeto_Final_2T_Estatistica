@@ -1,0 +1,1048 @@
+---
+title: "PADS - Aprendizado de Máquina 2<br><small>Projeto Final - Café Brasileiro </small>"
+author: "Bruno Mernick, Giovanna Rodrigues e Mariana Aukar"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output: 
+  html_document:
+    number_sections: no
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+---
+
+# 1) Contextualização
+
+O Brasil destaca-se como o maior exportador de café no mundo e o segundo maior consumidor dessa bebida. Responsável por um terço da produção global, o Brasil mantém a liderança na produção de café há mais de 150 anos.
+
+Entre as regiões produtoras, Minas Gerais é o maior estado produtor, contribuindo com cerca de 50% da produção nacional. Já São Paulo - conhecido pela sua tradição no cultivo de café, - produz exclusivamente Arábica.
+
+Por ser uma paixão nacional, também somos o segundo maior consumidor no mundo, perdendo apenas para os EUA.
+
+Em 2023 pela primeira vez na história, um produtor brasileiro, a São Mateus Agropecuária, conquistou o título "Best of the Best" no Prêmio Internacional Ernesto Illy. Esse reconhecimento é resultado de décadas de investimentos em técnicas sustentáveis e agricultura regenerativa. A fazenda foi pioneira em práticas como reuso da água e cuidado com o ecossistema, contribuindo para a qualidade do café brasileiro.
+
+Fonte1: CONAB. Disponível em: <https://www.abic.com.br/tudo-de-cafe/o-cafe-brasileiro-na-atualidade/>. Acesso em: 02/12/23. Fonte2: Ansa. Disponível em: <https://www.abic.com.br/tudo-de-cafe/o-cafe-brasileiro-na-atualidade/>. Acesso em: 02/12/23. Fonte3: Disponível em: <https://satocomunicacao.com.br/cafe-e-paixao-nacional-e-segunda-bebida-mais-consumida-pelos-brasileiros/>. Acesso em: 02/12/23.
+
+```{r, echo=FALSE}
+knitr::include_graphics("/Users/brunomernick/Downloads/cafe_Foto_Final.png")
+```
+
+
+# 2) Objetivo
+
+O objetivo principal deste projeto é desenvolver e validar um modelo de CLASSIFICÃO, capaz de distinguir cafés brasileiros de não-brasileiros com base em avaliações detalhadas fornecidas por Q Graders profissionais.
+
+# 3) Início Projeto
+
+#### 3.1) Carregando os pacotes
+
+```{r Carregando os pacotes,warning=FALSE, message=FALSE}
+library(tidymodels)
+library(tidyverse)
+library(skimr)
+library(ggplot2)
+library(gridExtra)
+library(patchwork)
+library(reshape2)
+library(car)
+library(corrplot)
+library(ranger)
+library(MASS)
+library(keras)
+library(rsample)
+library(yardstick)
+library(FactoMineR)
+library(factoextra)
+library(doParallel)
+library(caret)
+library(pROC)
+library(purrr)
+library(gt)
+library(ggrepel)
+library(dplyr)
+library(rmarkdown)
+```
+
+#### 3.2) Importe das bases
+
+```{r Importando as bases}
+
+#2)Import da base
+dados_originais <- read.csv("coffee_ratings_1.csv")
+
+```
+
+# 4) Análise Exploratória
+
+#### 4.1) Conhecendo a base Coffe_Ratings
+
+```{r Conhecendo a baseee}
+paged_table(dados_originais)
+```
+
+#### 4.2) Estrutura
+
+```{r Estrutura}
+
+# Mostre o número de linhas e colunas do DataFrame
+cat("Número de linhas:", nrow(dados_originais), "\n")
+cat("Número de colunas:", ncol(dados_originais), "\n")
+```
+
+#### 4.3) Contagem de Vazios
+
+```{r Vazios}
+
+#Verificando os dados missing
+resultado <- dados_originais %>%
+  lapply(type_sum) %>%
+  as_tibble() %>%
+  pivot_longer(cols = 1:ncol(dados_originais),
+               names_to = "Coluna",
+               values_to = "Tipo") %>%
+  mutate(Contagem_NA = colSums(is.na(dados_originais))) %>%
+  arrange(desc(Contagem_NA))
+
+resultado_df <- as.data.frame(resultado)
+
+print(resultado_df)
+```
+
+#### 4.4) Dropando Colunas
+
+```{r Dropando Colunas}
+
+# Dropando preditoras desinteressantes apos definiciao grupo
+dados_tratados_1 <- dados_originais %>% 
+  dplyr::select(- moisture,-cupper_points ,-category_two_defects ,-quakers ,-category_one_defects,-owner, -region, -farm_name, -lot_number, -mill, -ico_number, -company, -altitude, -producer, -number_of_bags, -bag_weight,
+                -in_country_partner, -harvest_year, -grading_date, -owner_1, -variety, -processing_method, -color,
+                -expiration, -certification_body, -certification_address, -certification_contact,-unit_of_measurement,-altitude_low_meters, -altitude_high_meters,-altitude_mean_meters)
+
+```
+
+#### 4.5) Dropando Dados Inconsistêntes
+
+```{r Drope Final}
+
+#4.1) Dropando linhas missing da coluna region
+dados_tratados_2 <- dados_tratados_1 %>% 
+  dplyr::filter(country_of_origin != "Cote d?Ivoire")
+
+# Excluindo o outlier em Honduras
+dados_tratados_4 <- dados_tratados_2 %>%
+  filter(!(country_of_origin == "Honduras" & total_cup_points == 0))
+
+```
+
+# 5) Análise Descritiva
+
+#### 5.1) Análise Estatistica + Checagem das Frequências
+
+```{r Inicio Descritivo}
+
+#Estatistica
+glimpse(dados_tratados_4)
+skim(dados_tratados_4)
+
+#frequencia
+table(dados_tratados_4$country_of_origin)
+table(dados_tratados_4$species)
+
+```
+
+#### 5.2) Dropando Desbalanceamento
+
+```{r Drope Desbalanceamento}
+
+#Grande desbalanceamento de dados entre robusta e Arabica causando efeito de multicolinearidade
+dados_tratados_4 <- dplyr::select(dados_tratados_4, -species)
+
+```
+
+# 6) Análise Grafica
+
+#### 6.1) Contagem por Pais e ponderação %
+
+```{r Graf1}
+# Balanceamento paises
+
+# Tiblbe com a frequencia dos dados Paises 
+tabela_regioes <- dados_tratados_4 %>%
+  count(country_of_origin) %>%
+  rename(Contagem = n) %>%
+  group_by(country_of_origin) %>%
+  mutate(Percentual_Participacao = (Contagem / nrow(dados_tratados_4)) * 100) %>%
+  ungroup() %>%
+  arrange(desc(Contagem))
+
+# Adicionar uma linha para somar os totais de contagem e participação
+tabela_regioes <- tabela_regioes %>%
+  bind_rows(
+    tibble(
+      country_of_origin = "Total",
+      Contagem = sum(tabela_regioes$Contagem),
+      Percentual_Participacao = sum(tabela_regioes$Percentual_Participacao)
+    )
+  )
+
+# Removendo a linha do 'Total' para o gráfico (se não quiser incluir o total)
+tabela_regioes <- tabela_regioes %>% filter(country_of_origin != "Total")
+
+# Reordenando os países com base na Contagem para exibição decrescente
+tabela_regioes <- tabela_regioes %>% 
+  mutate(country_of_origin = reorder(country_of_origin, -Contagem))
+
+# Calculando o máximo da Contagem e Percentual_Participacao para a escala
+max_contagem <- max(tabela_regioes$Contagem)
+max_percentual <- max(tabela_regioes$Percentual_Participacao)
+
+# Criando o gráfico
+grafico <- ggplot(tabela_regioes, aes(x = country_of_origin, y = Contagem)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  geom_line(aes(y = Percentual_Participacao * max_contagem / max_percentual, group = 1), 
+            color = "red", linewidth = 0.5) +
+  geom_point(aes(y = Percentual_Participacao * max_contagem / max_percentual), 
+             color = "red", size = 2) +
+  geom_text(aes(label = Contagem, y = Contagem), vjust = -0.5, size = 3.3) +
+  geom_text(aes(y = Percentual_Participacao * max_contagem / max_percentual, label = ifelse(Percentual_Participacao > 1, paste0(round(Percentual_Participacao, 0), "%"), "")), 
+            color = "white", vjust = 2.5, size = 2.3) +
+  scale_y_continuous(sec.axis = sec_axis(~ . * max_percentual / max_contagem, name = "Percentual de Participação (%)")) +
+  labs(x = "Países", y = "Contagem") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Exibindo o gráfico
+print(grafico)
+
+```
+#### 6.2) Nota Média por País 
+
+```{r Graf2}
+# 2.2) Nota media por pais
+
+# Calculando a média de total_cup_points  por país
+media_pontuacao_por_pais <- dados_tratados_4 %>%
+  group_by(country_of_origin) %>%
+  summarise(media_pontuacao = mean(total_cup_points , na.rm = TRUE)) %>%
+  arrange(desc(media_pontuacao))
+
+# Criando o gráfico com ggplot2
+plot <- ggplot(media_pontuacao_por_pais, aes(x = reorder(country_of_origin, -media_pontuacao), y = media_pontuacao)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = sprintf("%.2f", round(media_pontuacao, 2))),
+            position = position_dodge(width = 0.9), hjust = 1.1, size = 3.5, color = "white") +
+  theme_minimal() +
+  labs(title = "Média de Pontuação Total do Café por País", x = "País", y = "Média de Pontuação") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 0.5),
+        plot.title = element_text(size = 18, face = "bold"),
+        axis.title = element_text(size = 16)) +
+  coord_flip() # Usado para inverter as coordenadas e facilitar a leitura
+
+# Plotando o gráfico
+print(plot)
+
+```
+
+#### 6.3) Dipersão Total Notas vs Pais
+
+```{r Graf3}
+# Criar um único gráfico de dispersão para Total Cup Points vs paises 
+g <- ggplot(dados_tratados_4, aes(x = country_of_origin, y = total_cup_points)) + 
+  geom_point(position = position_jitter(width = 0.2), alpha = 0.5) + 
+  geom_smooth(aes(group = country_of_origin), method = "lm", se = FALSE, color = "blue") +
+  labs(title = "Dispersao do Total Cup Points por País") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Exibindo o gráfico
+print(g)
+
+```
+
+#### 6.4) Comparação das Notas do Brasil vs Países
+por Atributo
+
+```{r Graf4}
+# 2.2) Nota media Brasil por atributo
+
+# Filtrar os dados para incluir apenas as entradas do Brasil
+dados_graf_brasil <- dados_tratados_4 %>%
+  filter(country_of_origin == "Brazil") 
+
+# Calcular a média de cada atributo para o Brasil
+medias_brasil <- dados_graf_brasil %>%
+  summarise(
+    aroma = mean(aroma, na.rm = TRUE),
+    flavor = mean(flavor, na.rm = TRUE),
+    aftertaste = mean(aftertaste, na.rm = TRUE),
+    acidity = mean(acidity, na.rm = TRUE),
+    body = mean(body, na.rm = TRUE),
+    balance = mean(balance, na.rm = TRUE),
+    uniformity = mean(uniformity, na.rm = TRUE),
+    clean_cup = mean(clean_cup, na.rm = TRUE),
+    sweetness = mean(sweetness, na.rm = TRUE)
+  ) %>%
+  mutate(country = "Brasil")
+
+# Filtrar os dados para incluir apenas as entradas do Brasil
+dados_graf_outros <- dados_tratados_4 %>%
+  filter(country_of_origin != "Brazil") 
+
+# Calcular a média de cada atributo para os outros países
+medias_outros_paises <- dados_graf_outros %>%
+  summarise(
+    aroma = mean(aroma, na.rm = TRUE),
+    flavor = mean(flavor, na.rm = TRUE),
+    aftertaste = mean(aftertaste, na.rm = TRUE),
+    acidity = mean(acidity, na.rm = TRUE),
+    body = mean(body, na.rm = TRUE),
+    balance = mean(balance, na.rm = TRUE),
+    uniformity = mean(uniformity, na.rm = TRUE),
+    clean_cup = mean(clean_cup, na.rm = TRUE),
+    sweetness = mean(sweetness, na.rm = TRUE)
+  ) %>%
+  mutate(country = "Outros Países")
+
+# Unir os dados do Brasil com os dados dos outros países
+dados_comparativos <- rbind(medias_brasil, medias_outros_paises) %>%
+  gather(attribute, mean_value, -country)
+
+# Criando o gráfico com ggplot2
+plot_comparativo <- ggplot(dados_comparativos, aes(x = attribute, y = mean_value, fill = country)) +
+  geom_col(position = position_dodge(), width = 0.8) +
+  geom_text(aes(label = sprintf("%.2f%%", mean_value)),
+            position = position_dodge(width = 0.8), vjust = 1.5, size = 3.7, angle = 45) +
+  theme_minimal() +
+  labs(title = "Comparação Brasil vs. Outros Países", 
+       x = "Atributo", y = "Média") +
+  scale_fill_manual(values = c("Brasil" = "steelblue", "Outros Países" = "grey")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        plot.title = element_text(size = 18, face = "bold"),
+        axis.title = element_text(size = 16))
+
+# Exibir o gráfico
+print(plot_comparativo)
+
+```
+#### 6.5) Dipersão Total Notas vs Pais
+
+```{r Graf5}
+# Criar um único gráfico de dispersão para Total Cup Points vs paises 
+g <- ggplot(dados_tratados_4, aes(x = country_of_origin, y = total_cup_points)) + 
+  geom_point(position = position_jitter(width = 0.2), alpha = 0.5) + 
+  geom_smooth(aes(group = country_of_origin), method = "lm", se = FALSE, color = "blue") +
+  labs(title = "Dispersao do Total Cup Points por País") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Exibindo o gráfico
+print(g)
+
+```
+
+# 7) Ajuste Final para a Modelagem
+
+#### 7.1) Drop Final ajuste
+
+```{r drop_final}
+dados_tratados_4 <- dplyr::select(dados_tratados_4, -total_cup_points)
+
+```
+
+#### 7.2) Comparação da Base Antes de Depois
+
+```{r checagen}
+#5) Checando as limpezas de dados antes e depois
+
+dim_antes <- dim(dados_originais)
+dim_depois <- dim(dados_tratados_4)
+
+# Criando uma tibble para exibir as dimensões
+dimensoes <- tibble(
+  "Checagem" = c("Antes", "Depois"),
+  "Linhas" = c(dim_antes[1], dim_depois[1]),
+  "Colunas" = c(dim_antes[2], dim_depois[2])
+)
+# Exibindo a tibble
+print(dimensoes)
+```
+
+#### 7.3) Comparação da Base Antes de Depois
+
+```{r base_final}
+dados_final <- dados_tratados_4
+# Exibindo a tibble
+paged_table(dados_final)
+```
+
+# 8) Preparação para Modelagem
+
+```{r semente}
+
+# Definindo a semente para reprodutibilidade
+set.seed(15)
+```
+
+Aqui precisamos usar uma técnica de Estratificacao para poder balancear os dados , ja que o número de observações para o Brasil estao desproporcionais comparado com os demais paises. Sem esse balanceamento o modelo ficará tendencioso, ou seja , ele será capaz de classificar com muita precisào o que nào e café brasileiro do que brasileiro
+, nao sendo esse nosso objetivo.
+
+#### 8.1) Estratificação
+
+```{r estratificacao}
+# Subamostragem dos dados de outros países para equilibrar com os dados do Brasil
+dados_brazil <- dados_final %>% filter(country_of_origin == "Brazil")
+dados_outros <- dados_final %>% filter(country_of_origin != "Brazil")
+
+n_brazil <- nrow(dados_brazil)
+dados_outros_subamostrados <- dados_outros %>%
+  slice_sample(n = n_brazil)
+
+# Combinando os dados subamostrados com os dados do Brasil
+dados_combinados <- bind_rows(dados_brazil, dados_outros_subamostrados)
+```
+
+#### 8.2) Treino e Teste
+
+```{r treino e teste}
+# Redefinindo a divisão de treino e teste com os dados balanceados
+split_combinado <- initial_split(dados_combinados, prop = 0.7)
+treinamento <- training(split_combinado)
+teste <- testing(split_combinado)
+```
+#### 8.3) Checagem do Balanceamento - Estratificacao
+
+```{r Check}
+# Checando o Balanceamento____________________________________________________
+n_brasil_treinamento <- treinamento %>%
+  filter(country_of_origin == "Brazil") %>%
+  summarize(count = n()) %>%
+  pull(count)
+
+# Contando os registros do Brasil no conjunto de teste
+n_brasil_teste <- teste %>%
+  filter(country_of_origin == "Brazil") %>%
+  summarize(count = n()) %>%
+  pull(count)
+
+# Criando uma tibble para mostrar os resultados
+resumo_brasil <- tibble(
+  Conjunto = c("Treinamento", "Teste"),
+  Total_Brasil = c(n_brasil_treinamento, n_brasil_teste)
+)
+# Exibindo o resumo final
+print(resumo_brasil)
+print(nrow(treinamento))
+print(nrow(teste))
+```
+
+#### 8.4) Transformando a Coluna Pais em Binária para Classificacao
+
+```{r Binario}
+# Checando o Balanceamento____________________________________________________
+# Criar a nova variável alvo para classificação binária como fator
+treinamento$from_brazil <- as.factor(ifelse(treinamento$country_of_origin == "Brazil", 1, 0))
+teste$from_brazil <- as.factor(ifelse(teste$country_of_origin == "Brazil", 1, 0))
+
+# Remover a coluna original 'country_of_origin'
+treinamento$country_of_origin <- NULL
+teste$country_of_origin <- NULL
+```
+
+#### 8.5) Pré Processamento - Receita , Prep e Cake
+
+```{r Receita}
+# Preparando a receita com a nova variável alvo
+receita <- recipe(from_brazil ~ ., data = treinamento) %>% 
+  step_normalize(all_numeric())
+
+receita_prep <- prep(receita)
+treinamento_proc <- bake(receita_prep, new_data = NULL)
+teste_proc <- bake(receita_prep, new_data = teste)
+```
+
+# 9) Modelagem
+#### 9.1) Logistica
+
+```{r Logistica}
+fit_glm <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+logistica_simples <- fit(fit_glm, from_brazil ~ ., data = treinamento_proc)
+
+# Fazendo previsões no conjunto de teste e combinando com os dados de teste
+logistica <- predict(logistica_simples, teste_proc, type = "class") %>%
+  bind_cols(teste_proc) %>%
+  rename(Predito = .pred_class)
+
+# Verificando se a coluna 'from_brazil' está presente
+if (!"from_brazil" %in% names(logistica)) {
+  logistica$from_brazil <- teste$from_brazil
+}
+
+# Convertendo '0' e '1' para 'Não Brasileiro' e 'Brasileiro'
+logistica <- logistica %>%
+  mutate(Observado = ifelse(from_brazil == "1", "Brasileiro", "Não Brasileiro"),
+         Predito = ifelse(Predito == "1", "Brasileiro", "Não Brasileiro"))
+```
+
+#### 9.1) Ridge Tunado
+
+```{r Ridge}
+ #Definindo o modelo de regressão logística com penalidade Ridge
+ridge <- logistic_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet") %>% 
+  set_mode("classification")
+
+# Validação cruzada para ajuste do hiperparâmetro em 10 lotes
+ridge_cv_split <- vfold_cv(treinamento_proc, v = 10)
+
+doParallel::registerDoParallel() # Paralelizando os próximos comandos
+
+# Definição do espaço de busca para o hiperparâmetro 'penalty'
+val_gride_ridge <- grid_regular(penalty(range = c(0.001, 1)), levels = 20)
+
+# Ajuste do hiperparâmetro usando validação cruzada
+ridge_lambda_tune <- tune_grid(
+  ridge,
+  receita,
+  resamples = ridge_cv_split,
+  grid = val_gride_ridge,
+  metrics = metric_set(accuracy),
+  control = control_grid(save_pred = TRUE)
+)
+
+# Selecionando a melhor combinação de hiperparâmetros
+ridge_best <- ridge_lambda_tune %>% 
+  select_best("accuracy")
+
+# Finalizando o modelo com os melhores hiperparâmetros
+fit_ridge <- finalize_model(ridge, parameters = ridge_best) %>%
+  fit(from_brazil ~ ., data = treinamento_proc)
+
+# Previsões no conjunto de teste
+ridge_fit_tunado <- predict(fit_ridge, teste_proc, type = "class") %>%
+  bind_cols(teste_proc) %>%
+  rename(Predito = .pred_class)
+
+# Convertendo '0' e '1' para 'Não Brasileiro' e 'Brasileiro'
+ridge_fit_tunado <- ridge_fit_tunado %>%
+  mutate(Observado = ifelse(from_brazil == "1", "Brasileiro", "Não Brasileiro"),
+         Predito = ifelse(Predito == "1", "Brasileiro", "Não Brasileiro"))
+```
+
+#### 9.2) Lasso Tunado
+
+```{r Lasso}
+ # Definindo o modelo de regressão logística com penalidade Ridge
+lasso <- logistic_reg(penalty = tune(), mixture = 0) %>% 
+  set_engine("glmnet") %>% 
+  set_mode("classification")
+
+# Validação cruzada para ajuste do hiperparâmetro em 10 lotes
+ridge_cv_split <- vfold_cv(treinamento_proc, v = 10)
+
+doParallel::registerDoParallel() # Paralelizando os próximos comandos
+
+# Definição do espaço de busca para o hiperparâmetro 'penalty'
+val_gride_lasso <- grid_regular(penalty(range = c(0.001, 1)), levels = 20)
+
+# Ajuste do hiperparâmetro usando validação cruzada
+lasso_lambda_tune <- tune_grid(
+  lasso,
+  receita,
+  resamples = ridge_cv_split,
+  grid = val_gride_lasso,
+  metrics = metric_set(accuracy),
+  control = control_grid(save_pred = TRUE)
+)
+
+# Selecionando a melhor combinação de hiperparâmetros
+lasso_best <- lasso_lambda_tune %>% 
+  select_best("accuracy")
+
+# Finalizando o modelo com os melhores hiperparâmetros
+fit_lasso <- finalize_model(lasso, parameters = lasso_best) %>%
+  fit(from_brazil ~ ., data = treinamento_proc)
+
+# Previsões no conjunto de teste
+lasso_fit_tunado <- predict(fit_lasso, teste_proc, type = "class") %>%
+  bind_cols(teste_proc) %>%
+  rename(Predito = .pred_class)
+
+# Convertendo '0' e '1' para 'Não Brasileiro' e 'Brasileiro'
+lasso_fit_tunado <- lasso_fit_tunado %>%
+  mutate(Observado = ifelse(from_brazil == "1", "Brasileiro", "Não Brasileiro"),
+         Predito = ifelse(Predito == "1", "Brasileiro", "Não Brasileiro"))
+```
+
+#### 9.3) Árvore de Decisào
+
+```{r Arvore}
+# Definindo o modelo de árvore de decisão
+arvore <- decision_tree(tree_depth = tune(), cost_complexity = tune()) %>% 
+  set_engine("rpart") %>% 
+  set_mode("classification")
+
+# Paralelizando os próximos comandos
+doParallel::registerDoParallel()
+
+# Definição do espaço de busca para os hiperparâmetros 'tree_depth' e 'cost_complexity'
+val_grid_arvore <- grid_regular(
+  tree_depth(range = c(1, 10)), 
+  cost_complexity(range = c(0.001, 0.1)), 
+  levels = 10
+)
+
+# Criando o objeto de validação cruzada
+cv_split <- vfold_cv(treinamento_proc, v = 10)
+
+# Ajuste do hiperparâmetro usando validação cruzada
+arvore_tune <- tune_grid(
+  arvore,
+  receita,
+  resamples = cv_split,
+  grid = val_grid_arvore,
+  metrics = metric_set(accuracy)
+)
+
+# Coletando as métricas do modelo ajustado
+arvore_metrics <- arvore_tune %>% 
+  collect_metrics()
+
+# Selecionando a melhor combinação de hiperparâmetros com base na acurácia
+arvore_best <- arvore_tune %>% 
+  select_best("accuracy")
+
+# Finalizando o modelo com os melhores hiperparâmetros
+fit_arvore_final <- finalize_model(arvore, parameters = arvore_best) %>%
+  fit(from_brazil ~ ., data = treinamento_proc)
+
+# Previsões no conjunto de teste
+arvore_fit_tunado <- predict(fit_arvore_final, teste_proc, type = "class") %>%
+  bind_cols(teste_proc) %>%
+  rename(Predito = .pred_class)
+
+# Convertendo '0' e '1' para 'Não Brasileiro' e 'Brasileiro'
+arvore_fit_tunado <- arvore_fit_tunado %>%
+  mutate(Observado = ifelse(from_brazil == "1", "Brasileiro", "Não Brasileiro"),
+         Predito = ifelse(Predito == "1", "Brasileiro", "Não Brasileiro"))
+```
+
+#### 9.4) XBoost
+
+```{r Xboost}
+# Define o modelo XGBoost com parâmetros para serem tunados
+xgboost_model <- boost_tree(
+  trees = tune(),           # Número de árvores
+  tree_depth = tune(),      # Profundidade da árvore
+  min_n = tune(),           # Número mínimo de observações
+  loss_reduction = tune(),  # Redução de perda necessária para fazer uma divisão adicional
+  mtry = tune(),            # Número de variáveis a considerar em cada divisão
+  learn_rate = tune()       # Taxa de aprendizado
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+
+# Criando o objeto de validação cruzada
+cv_split_boost <- vfold_cv(treinamento_proc, v = 10)
+
+
+# Executa a sintonia (tuning) do modelo
+xgboost_tune <- tune_grid(
+  xgboost_model,
+  receita,
+  resamples = cv_split_boost,
+  grid = 30,
+  metrics = metric_set(accuracy)
+)
+
+# Coleta as métricas calculadas
+xgboost_metrics <- xgboost_tune %>% 
+  collect_metrics()
+
+# Seleciona a melhor combinação de hiperparâmetros
+xgboost_best <- xgboost_tune %>% 
+  select_best("accuracy")
+
+# Finaliza o modelo com os melhores hiperparâmetros
+fit_xgboost <- finalize_model(xgboost_model, parameters = xgboost_best) %>%
+  fit(from_brazil ~ ., data = treinamento_proc)
+
+# Faz previsões no conjunto de teste
+xgboost_fit_tunado <- predict(fit_xgboost, teste_proc, type = "class") %>% 
+  bind_cols(teste_proc) %>%
+  rename(Predito = .pred_class) %>%
+  mutate(Observado = ifelse(from_brazil == "1", "Brasileiro", "Não Brasileiro"),
+         Predito = ifelse(Predito == "1", "Brasileiro", "Não Brasileiro"))
+```
+#### 9.5) Rede Neural
+
+```{r Rede,warning=FALSE, message=FALSE}
+# Preparação dos dados para a Rede Neural **************************************
+
+# Seleciona as variáveis preditoras e converte para matriz
+X_trn <- treinamento_proc %>% 
+  dplyr::select(-from_brazil) %>% 
+  as.matrix()
+
+X_tst <- teste_proc %>% 
+  dplyr::select(-from_brazil) %>% 
+  as.matrix()
+
+# Normalização dos dados
+X_trn <- scale(X_trn)
+X_tst <- scale(X_tst, center = attr(X_trn, "scaled:center"), scale = attr(X_trn, "scaled:scale"))
+
+# Converter as classes de destino para one-hot encoding
+num_classes <- length(unique(treinamento_proc$from_brazil))
+Y_trn <- to_categorical(as.numeric(factor(treinamento_proc$from_brazil)) - 1, num_classes)
+Y_tst <- to_categorical(as.numeric(factor(teste_proc$from_brazil)) - 1, num_classes)
+
+# Construção da Rede Neural ****************************************************
+
+net <- keras_model_sequential() %>% 
+  layer_dense(units = 64, activation = "relu", input_shape = ncol(X_trn)) %>% 
+  layer_dense(units = 32, activation = "relu") %>% 
+  layer_dense(units = 16, activation = "relu") %>% 
+  layer_dense(units = num_classes, activation = "sigmoid")
+
+net <- compile(
+  net, 
+  loss = "binary_crossentropy", 
+  optimizer = "adam", 
+  metrics = "accuracy"
+)
+
+summary(net)
+
+# Treinamento da Rede Neural ****************************************************
+
+history <- fit(net, X_trn, Y_trn, batch_size = 50, epochs = 30, validation_split = 0.2)
+
+# Previsões e Avaliação *********************************************************
+
+y_hat_net <- predict(net, X_tst)
+predicted_classes <- apply(y_hat_net, 1, which.max) - 1 # Obter as classes previstas
+
+# Criando um dataframe temporário para as previsões da Rede Neural
+previsoes_rede_neural <- cbind(teste_proc, Predito = as.factor(predicted_classes))
+
+# Convertendo '0' e '1' para 'Não Brasileiro' e 'Brasileiro'
+previsoes_rede_neural <- previsoes_rede_neural %>%
+  mutate(Observado = ifelse(from_brazil == "1", "Brasileiro", "Não Brasileiro"),
+         Predito = ifelse(Predito == 1, "Brasileiro", "Não Brasileiro"))
+
+# 10) Matriz de Confusão
+
+```{r matriz}
+
+criar_df_confusao <- function(predicoes, observado, nome_modelo) {
+  # Definindo os níveis na ordem desejada com "Brasileiro" primeiro
+  niveis <- c("Brasileiro", "Não Brasileiro")
+  
+  # Convertendo para fatores com os níveis definidos
+  predicoes <- factor(predicoes, levels = niveis)
+  observado <- factor(observado, levels = niveis)
+  
+  cm <- confusionMatrix(predicoes, observado)
+  df <- cbind(melt(as.matrix(cm$table)), Modelo = nome_modelo)
+  return(df)
+}
+
+# Convertendo previsões e observações para fatores com os mesmos níveis
+logistica$Predito <- factor(logistica$Predito)
+logistica$Observado <- factor(logistica$Observado)
+df_logistica <- criar_df_confusao(logistica$Predito, logistica$Observado, "Logística")
+
+ridge_fit_tunado$Predito <- factor(ridge_fit_tunado$Predito)
+ridge_fit_tunado$Observado <- factor(ridge_fit_tunado$Observado)
+df_ridge <- criar_df_confusao(ridge_fit_tunado$Predito, ridge_fit_tunado$Observado, "Ridge Tunado")
+
+lasso_fit_tunado$Predito <- factor(lasso_fit_tunado$Predito)
+lasso_fit_tunado$Observado <- factor(lasso_fit_tunado$Observado)
+df_lasso <- criar_df_confusao(lasso_fit_tunado$Predito, lasso_fit_tunado$Observado, "Lasso Tunado")
+
+arvore_fit_tunado$Predito <- factor(arvore_fit_tunado$Predito)
+arvore_fit_tunado$Observado <- factor(arvore_fit_tunado$Observado)
+df_arvore <- criar_df_confusao(arvore_fit_tunado$Predito, arvore_fit_tunado$Observado, "Árvore de Decisão")
+
+xgboost_fit_tunado$Predito <- factor(xgboost_fit_tunado$Predito)
+xgboost_fit_tunado$Observado <- factor(xgboost_fit_tunado$Observado)
+df_xgboost <- criar_df_confusao(xgboost_fit_tunado$Predito, xgboost_fit_tunado$Observado, "XGBoost")
+
+# Para a Rede Neural, ajustando as previsões
+predicted_classes_net <- ifelse(previsoes_rede_neural$Predito == 1, "Brasileiro", "Não Brasileiro")
+predicted_classes_net <- factor(predicted_classes_net)
+previsoes_rede_neural$Observado <- factor(previsoes_rede_neural$Observado)
+df_rede_neural <- criar_df_confusao(predicted_classes_net, previsoes_rede_neural$Observado, "Rede Neural")
+
+# Combinando todos os dataframes
+df_all <- rbind(df_logistica, df_ridge, df_lasso, df_arvore, df_xgboost, df_rede_neural)
+
+
+ggplot(data = df_all, aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = value), color = 'darkblue') +
+  geom_text(aes(label = sprintf("%d", value)), vjust = 1, size = 3) +
+  scale_fill_gradient(low = "lightblue", high = "steelblue") +
+  scale_y_discrete(limits = rev(levels(df_all$Reference))) +  # Isso irá inverter a ordem no eixo Y
+  theme_minimal() +
+  labs(title = "Comparação de Matrizes de Confusão", x = "Predição", y = "Real", fill = "Contagem") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.text.y = element_text()) +
+  facet_wrap(~ Modelo, ncol = 3)
+```
+
+# 10) Curva RoC
+
+```{r Roc}
+
+# Para o modelo Logistica
+logistica_probs <- predict(logistica_simples, teste_proc, type = "prob")[[".pred_1"]]
+# Para o modelo Ridge
+ridge_probs <- predict(fit_ridge, teste_proc, type = "prob")[[".pred_1"]]
+# Para o modelo Lasso
+lasso_probs <- predict(fit_lasso, teste_proc, type = "prob")[[".pred_1"]]
+# Para o modelo de Árvore de Decisão
+arvore_probs <- predict(fit_arvore_final, teste_proc, type = "prob")[[".pred_1"]]
+# Para o modelo XGBoost
+xgboost_probs <- predict(fit_xgboost, teste_proc, type = "prob")[[".pred_1"]]
+# Para a Rede Neural
+rede_neural_probs <- predict(net, X_tst)[, 1]
+
+resultados_preds <- bind_rows(
+  tibble(
+    modelo = "Logística", 
+    marcador = logistica_probs, 
+    resposta = as.factor(teste$from_brazil)
+  ), 
+  tibble(
+    modelo = "Ridge", 
+    marcador = ridge_probs,
+    resposta = as.factor(teste$from_brazil)
+  ), 
+  tibble(
+    modelo = "Lasso",
+    marcador = lasso_probs, 
+    resposta = as.factor(teste$from_brazil)
+  ), 
+  tibble(
+    modelo = "Árvore de Decisão",
+    marcador = arvore_probs,
+    resposta = as.factor(teste$from_brazil)
+  ),
+  tibble(
+    modelo = "XGBoost",
+    marcador = xgboost_probs,
+    resposta = as.factor(teste$from_brazil)
+  ),
+  tibble(
+    modelo = "Neural",
+    marcador = rede_neural_probs,
+    resposta = as.factor(teste$from_brazil)
+  )
+)
+
+# Calculando a curva ROC para cada modelo e plotando
+roc_plot <- resultados_preds %>% 
+  group_by(modelo) %>%
+  roc_curve(resposta, marcador, event_level = "second") %>% 
+  autoplot() +
+  theme(legend.position = "right")
+
+print(roc_plot)
+
+```
+
+
+# 11) Analisando as Métricas 
+    ( Acurácia, Precisão , Recall e F1 - Score)
+
+```{r Metrica}
+
+#Avaliando metricas _ 
+
+lista_modelos <- list(df_logistica, df_ridge, df_lasso, df_arvore, df_xgboost, df_rede_neural)
+
+# Calculando as métricas diretamente dos dados fornecidos
+metricas_modelos <- lapply(lista_modelos, function(df) {
+  verdadeiro_positivo <- df$value[df$Prediction == "Brasileiro" & df$Reference == "Brasileiro"]
+  falso_positivo <- df$value[df$Prediction == "Não Brasileiro" & df$Reference == "Brasileiro"]
+  falso_negativo <- df$value[df$Prediction == "Brasileiro" & df$Reference == "Não Brasileiro"]
+  verdadeiro_negativo <- df$value[df$Prediction == "Não Brasileiro" & df$Reference == "Não Brasileiro"]
+  
+  acuracia <- (verdadeiro_positivo + verdadeiro_negativo) / sum(df$value)
+  precisao <- verdadeiro_positivo / (verdadeiro_positivo + falso_positivo)
+  recall <- verdadeiro_positivo / (verdadeiro_positivo + falso_negativo)
+  f1 <- ifelse((precisao + recall) == 0, 0, 2 * (precisao * recall) / (precisao + recall))
+  
+  tibble(
+    Modelo = unique(df$Modelo),
+    Acuracia = acuracia,
+    Precisao = precisao,
+    Recall = recall,
+    F1 = f1
+  )
+}) %>% bind_rows()
+
+# Tratando NA, convertendo métricas para porcentagem e ordenando por acurácia
+metricas_modelos <- metricas_modelos %>%
+  mutate(
+    across(c(Acuracia, Precisao, Recall, F1), ~ifelse(is.na(.), 0, round(. * 100, 0)))
+  ) %>%
+  arrange(desc(Acuracia))
+
+# Formatação dos dados para a visualização com gt
+gt_table <- metricas_modelos %>%
+  gt() %>%
+  tab_header(
+    title = "Métricas de Desempenho dos Modelos"
+  ) %>%
+  cols_label(
+    Modelo = "Modelo",
+    Acuracia = "Acurácia",
+    Precisao = "Precisão",
+    Recall = "Recall",
+    F1 = "F1 Score"
+  ) %>%
+  fmt_number(
+    columns = c("Acuracia", "Precisao", "Recall", "F1"),
+    decimals = 0,
+    pattern = "{x}%"
+  ) %>%
+  tab_options(
+    heading.background.color = "gray",
+    column_labels.font.size = 12,
+    data_row.padding = px(10)
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightblue"),
+    locations = cells_body(
+      columns = c("Acuracia", "Precisao", "Recall", "F1")
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(
+      columns = c("Modelo", "Acuracia", "Precisao", "Recall", "F1")
+    )
+  )
+
+# Exibindo a tabela
+gt_table
+
+```
+
+# 12) Analise Não Supervisionada - PCA
+
+A ánalise foi feita para os países mais avaliados em número de observacões dentro  das observacões ( Top 10)
+
+#### 12.1) Preparando PCA
+
+```{r Prep_Pca}
+
+# Passando os dados tratados para o nova variavel
+dados_clust <- dados_final
+
+# Contando os registros para cada país para levar somente o top 10 mais avaliados em frequencia
+country_counts <- dados_clust %>%
+  count(country_of_origin) %>%
+  arrange(desc(n))
+
+# Selecionando os top 6 países com mais registros
+top_countries <- head(country_counts, 10)
+
+# Filtrando 'dados_clust' para incluir apenas os top 6 países
+filtered_clust <- dados_clust %>%
+  filter(country_of_origin %in% top_countries$country_of_origin)
+
+# Agrupando e somando os atributos para os países filtrados
+df <- filtered_clust %>%
+  group_by(country_of_origin) %>%
+  summarise(across(c(aroma, flavor, aftertaste, acidity, body, balance, uniformity, clean_cup, sweetness), ~sum(., na.rm = TRUE)))
+
+# Definir a coluna 'regiao' como row names e remover a coluna do dataframe
+
+df <- df %>%
+  column_to_rownames(var = "country_of_origin")
+
+
+X <- scale(df, 
+           center = TRUE, # centraliza os dados
+           scale = TRUE) # escalona os dados (pois estao em medidas diferentes)
+```
+
+#### 12.2) Aplicando PCA e Analisando
+
+```{r Analisando_PCA}
+pca <- prcomp(X) # aplica o PCA
+
+# Todos os atributos para PC1 tem o mesmo peso nao mostrando atributos que se sobressaem
+
+pca$rotation <- -pca$rotation # troca o sinal das cargas
+pca$x <- -pca$x # troca o sinal dos scores
+
+Phi <- pca$rotation # matriz de cargas
+head(Phi)
+
+Z <- pca$x # matriz de scores
+head(Z)
+
+#Analises PCA_______________-
+
+# Resumo do PCA para verificar a variação explicada por cada componente principal
+summary(pca)
+
+# Obtendo as cargas para cada atributo nos componentes principais
+loadings <- abs(pca$rotation) 
+
+# Para identificar os atributos mais importantes para o primeiro componente principal (PC1)
+atributos_importantes_pc1 <- sort(loadings[,1], decreasing = TRUE)
+
+# Imprimindo os atributos mais importantes para PC1
+print(atributos_importantes_pc1)
+
+# Convertendo a matriz Phi em uma tibble, preservando os nomes das linhas
+contribuicoes <- as_tibble(Phi, rownames = "country_of_origin") %>%
+  mutate(Contribuicao_PC1 = (PC1^2) * 100 / sum(PC1^2)) %>%
+  dplyr::select(country_of_origin, Contribuicao_PC1)
+
+# Visualizando as contribuições
+print(contribuicoes)
+```
+
+#### 12.3) Análise Gráfica
+
+```{r Analise Grafica_PCA}
+
+
+# o grafico abaixo mostra o percentual explicado da variancia de cada componente
+fviz_eig(pca, addlabels = TRUE) + 
+  labs(x = "Componente Principal",
+       y = "Percentual explicado da variância")
+
+# Grafico mostra a PCA explicando quase toda a variancia da base
+
+# biplot do factoextra
+fviz_pca_biplot(pca, 
+                repel = TRUE, 
+                xlab = "PC1 - Intensidade do Aroma", 
+                ylab = "PC2 - Qualidade do Sabor",
+                labelsize = 3, 
+                geom = c("point", "text"), 
+                addEllipses = FALSE) + 
+  theme(plot.margin = margin(0, 0, 0, 0, "cm"), 
+        text = element_text(size = 10)) +
+  theme(axis.title.x = element_text(size = 12), 
+        axis.title.y = element_text(size = 12), 
+        axis.text.x = element_text(size = 8),  
+        axis.text.y = element_text(size = 8))  
+```
+
+#### 12.4) Análise Brasil PCA
+
+Brasil: Está próximo do centro no eixo PC1, indicando uma intensidade de aroma moderada. Os atributos "body", "balance" e "aftertaste" apontam na direção do Brasil, sugerindo que esses atributos são fortes no café brasileiro.
+
+
+# 13) Conclusão 
+
+Nossa expectativa era alcançar uma precisão superior a 65% na identificação do café brasileiro. Contudo, enfrentamos desafios significativos devido ao desbalanceamento dos dados. Esse obstáculo nos proporcionou um valioso aprendizado sobre como manejar eficientemente tais problemas. Empregamos e descartamos múltiplos modelos de regressão altamente colinearizados, e adotamos diversas abordagens e técnicas para mitigar essas dificuldades. Essa jornada nos levou à conclusão de que uma acurácia de 65% e a utilização do método XGBoost representam a melhor performance possível para determinar se um café é brasileiro ou não.
+
+
+
